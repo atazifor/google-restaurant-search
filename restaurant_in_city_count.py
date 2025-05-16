@@ -5,103 +5,139 @@ from collections import defaultdict
 
 API_KEY = os.environ.get("GOOGLE_MAPS_API_KEY")
 LOCATION = "Yaounde, Cameroon"
-MAX_RESULTS = 300  # Target number of unique places
+MAX_UNIQUE_RESULTS = 500  # Target number of unique places
 
-# Expanded list of search terms
+# Enhanced search configuration
 SEARCH_TERMS = [
-    "restaurant", "restaurants", 
-    "cafe", "cafes",
-    "bar", "bars",
-    "bistro", "food",
-    "eat", "dining",
-    "place to eat", "local food",
-    "cameroonian food", "african restaurant",
-    "fast food", "pizza",
-    "burger", "chicken",
-    "seafood", "bakery"
+    "restaurant", "cafe", "bar", "bistro", "food",
+    "eat", "dining", "local food", "cameroonian food",
+    "african restaurant", "fast food", "pizza",
+    "burger", "chicken", "seafood", "bakery"
 ]
 
-def fetch_places(search_term):
+PLACE_TYPES = [
+    "restaurant", "cafe", "bar", "bakery",
+    "food", "meal_delivery", "meal_takeaway"
+]
+
+# Yaoundé bounding box coordinates
+LAT_RANGE = [3.80, 3.90]  # North-South bounds
+LNG_RANGE = [11.45, 11.55]  # East-West bounds
+GRID_STEPS = 3  # 3x3 search grid
+
+def generate_search_points():
+    """Generate geographic grid points across Yaoundé"""
+    lat_step = (LAT_RANGE[1] - LAT_RANGE[0]) / GRID_STEPS
+    lng_step = (LNG_RANGE[1] - LNG_RANGE[0]) / GRID_STEPS
+    
+    for i in range(GRID_STEPS):
+        for j in range(GRID_STEPS):
+            yield (
+                LAT_RANGE[0] + i * lat_step,
+                LNG_RANGE[0] + j * lng_step
+            )
+
+def search_places(params):
+    """Execute search with pagination"""
     endpoint = "https://maps.googleapis.com/maps/api/place/textsearch/json"
-    params = {
-        "query": f"{search_term} in {LOCATION}",
-        "key": API_KEY,
-        "region": "cm"
-    }
-    
     unique_places = set()
-    session_places = []
+    session_results = []
     
-    while len(unique_places) < MAX_RESULTS:
+    while len(unique_places) < 60:  # Max per search variant
         try:
             response = requests.get(endpoint, params=params)
             result = response.json()
             
             if result.get("status") != "OK":
-                print(f"⚠️ [{search_term}] API Error: {result.get('status')}")
                 break
                 
             new_places = result.get("results", [])
-            new_ids = [p["place_id"] for p in new_places]
+            new_ids = {p["place_id"] for p in new_places}
             
-            # Track duplicates within this search term
-            duplicates = sum(1 for pid in new_ids if pid in unique_places)
             unique_places.update(new_ids)
-            session_places.extend(new_places)
-            
-            print(f"🔍 [{search_term}] Page {len(session_places)//20 + 1}: "
-                  f"+{len(new_places)} ({duplicates} dup) | "
-                  f"Total: {len(unique_places)}")
+            session_results.extend(new_places)
             
             if "next_page_token" not in result:
                 break
                 
             params["pagetoken"] = result["next_page_token"]
-            time.sleep(3)  # Increased delay for token activation
+            time.sleep(3)  # Critical for token activation
             
         except Exception as e:
-            print(f"❌ [{search_term}] Failed: {str(e)}")
+            print(f"Search error: {str(e)}")
             break
     
-    return session_places
-
-def analyze_results(all_places):
-    # Count by type
-    type_counter = defaultdict(int)
-    for place in all_places:
-        for t in place.get("types", []):
-            type_counter[t] += 1
-    
-    print("\n📊 Results Analysis:")
-    print(f"Total unique places: {len({p['place_id'] for p in all_places})}")
-    print(f"Total raw results: {len(all_places)}")
-    print("\nMost common place types:")
-    for t, count in sorted(type_counter.items(), key=lambda x: -x[1])[:10]:
-        print(f"- {t}: {count}")
+    return session_results
 
 def main():
     all_places = []
     seen_ids = set()
+    search_count = 0
     
-    for term in SEARCH_TERMS:
-        print(f"\n🚀 Searching: '{term}'")
-        places = fetch_places(term)
-        
-        # Deduplicate while preserving order
-        new_places = [p for p in places if p["place_id"] not in seen_ids]
-        seen_ids.update(p["place_id"] for p in new_places)
-        all_places.extend(new_places)
-        
-        if len(seen_ids) >= MAX_RESULTS:
+    print(f"🚀 Beginning comprehensive search in {LOCATION}...\n")
+    
+    # Strategy 1: Text searches across geographic grid
+    for lat, lng in generate_search_points():
+        for term in SEARCH_TERMS:
+            params = {
+                "query": term,
+                "location": f"{lat},{lng}",
+                "radius": 3000,  # 3km radius
+                "key": API_KEY,
+                "region": "cm"
+            }
+            results = search_places(params)
+            new_places = [p for p in results if p["place_id"] not in seen_ids]
+            seen_ids.update(p["place_id"] for p in new_places)
+            all_places.extend(new_places)
+            search_count += 1
+            print(f"🔍 [{search_count}] {term} @ {lat:.3f},{lng:.3f}: "
+                  f"+{len(new_places)} new (Total: {len(seen_ids)})")
+            
+            if len(seen_ids) >= MAX_UNIQUE_RESULTS:
+                break
+        if len(seen_ids) >= MAX_UNIQUE_RESULTS:
             break
     
-    analyze_results(all_places)
+    # Strategy 2: Type-specific searches
+    type_counts = defaultdict(int)
+    for place_type in PLACE_TYPES:
+        params = {
+            "type": place_type,
+            "location": "3.8480,11.5021",  # Yaoundé center
+            "radius": 15000,  # 15km radius
+            "key": API_KEY
+        }
+        results = search_places(params)
+        new_places = [p for p in results if p["place_id"] not in seen_ids]
+        type_counts[place_type] = len(new_places)
+        seen_ids.update(p["place_id"] for p in new_places)
+        all_places.extend(new_places)
+        search_count += 1
+        print(f"🔍 [{search_count}] Type:{place_type}: "
+              f"+{len(new_places)} new (Total: {len(seen_ids)})")
+        
+        if len(seen_ids) >= MAX_UNIQUE_RESULTS:
+            break
     
-    # Save just the IDs for verification
-    with open("place_ids.txt", "w") as f:
-        f.write("\n".join(p["place_id"] for p in all_places))
+    # Results analysis
+    print("\n📊 Final Results Analysis")
+    print(f"Total unique places found: {len(seen_ids)}")
+    print(f"Total API calls made: {search_count}")
     
-    print(f"\n✅ Saved {len(all_places)} place IDs to place_ids.txt")
+    # Type breakdown
+    print("\n🔎 Type distribution:")
+    type_dist = defaultdict(int)
+    for place in all_places:
+        for t in place.get("types", []):
+            type_dist[t] += 1
+    for t, count in sorted(type_dist.items(), key=lambda x: -x[1])[:15]:
+        print(f"- {t}: {count}")
+    
+    # Save raw IDs
+    with open("yaounde_restaurant_ids.txt", "w") as f:
+        f.write("\n".join(seen_ids))
+    print(f"\n✅ Saved {len(seen_ids)} place IDs to yaounde_restaurant_ids.txt")
 
 if __name__ == "__main__":
     main()
