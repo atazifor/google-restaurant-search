@@ -7,11 +7,12 @@ from collections import defaultdict
 API_KEY = os.environ.get("GOOGLE_MAPS_API_KEY")
 INPUT_FILE = "yaounde_restaurant_ids.txt"
 OUTPUT_FILE = "restaurants_yaounde_verified.csv"
+REQUEST_DELAY = 0.2  # seconds
 
 # Field Mapping (API Fields → CSV Headers)
 FIELD_MAPPING = {
     "name": ("Name", ""),
-    "formatted_address": ("Description", ""),
+    "formatted_address": ("Address", ""),
     "formatted_phone_number": ("Phone", ""),
     "types": ("Category", []),
     "url": ("URL", ""),
@@ -38,7 +39,7 @@ def get_place_details(place_id):
             params={
                 "place_id": place_id,
                 "key": API_KEY,
-                "fields": ",".join(FIELD_MAPPING.keys()),
+                "fields": ",".join(FIELD_MAPPING.keys()) + ",geometry",
                 "language": "en"
             }
         )
@@ -66,7 +67,7 @@ def main():
         writer = csv.writer(f)
         
         # Write headers (SR, SKU + mapped fields)
-        headers = ["SR", "SKU"] + [v[0] for v in FIELD_MAPPING.values()]
+        headers = ["SR", "SKU"] + [v[0] for v in FIELD_MAPPING.values()] + ["Latitude", "Longitude"]
         writer.writerow(headers)
         
         processed_count = 0
@@ -89,18 +90,27 @@ def main():
                     value = "\n".join(f"- {t}" for t in value) if value else ""
                     for t in details.get("types", []):
                         type_counter[t] += 1
-                
                 row.append(value)
+
+            # Add latitude and longitude after processing all other fields    
+            geometry = details.get("geometry", {})
+            location = geometry.get("location", {})
+            row.append(location.get("lat", 0.0))  # Latitude
+            row.append(location.get("lng", 0.0))
+                
+                
             
             writer.writerow(row)
             processed_count += 1
             
             # Progress update every 10 records
             if i % 10 == 0:
-                print(f"✅ Processed {i}/{len(place_ids)} - Last: {details.get('name', place_id)}")
+                remaining = len(place_ids) - i
+                eta = remaining * REQUEST_DELAY / 60  # minutes
+                print(f"✅ Processed {i}/{len(place_ids)} (ETA: {eta:.1f}min) - Last: {details.get('name', place_id)}")
             
             # Respect API rate limits
-            time.sleep(0.2)  # 200ms between requests
+            time.sleep(REQUEST_DELAY)  # 200ms between requests
     
     # Print summary
     print(f"\n🎉 Successfully processed {processed_count}/{len(place_ids)} places")
